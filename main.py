@@ -9,27 +9,25 @@ import io
 import requests
 
 # --- CONFIGURATION ---
-# These are the channel IDs you provided
-DATA_CHANNEL_ID = 1464978865351950432      # Saves the welcome text
-TEMPLATE_CHANNEL_ID = 1464979503645200652  # Saves the images
-WELCOME_CHANNEL_ID = 1452952401064759348   # Where the bot says hello
+# ⚠️ MAKE SURE THE BOT IS PRESENT IN BOTH SERVERS (Main & Storage)!
+DATA_CHANNEL_ID = 1464978865351950432      # DB Server: Saves the welcome text
+TEMPLATE_CHANNEL_ID = 1464979503645200652  # DB Server: Saves the images
+WELCOME_CHANNEL_ID = 1452952401064759348   # Main Server: Where the bot says hello
 
 # --- TEXT CONFIG (Coordinates & Font) ---
-# Calculated based on your image data
 TEXT_X = 1395
 TEXT_Y = 806
 FONT_SIZE = 120
-FONT_PATH = "njnaruto.ttf" # ⚠️ Make sure this file is uploaded to Render!
+FONT_PATH = "njnaruto.ttf"
 
-# --- FLASK SERVER (For Render Keep-Alive) ---
+# --- FLASK SERVER (Render Keep-Alive) ---
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Dattebayo! The Bot is guarding the village! 🍃"
+    return "Dattebayo! Bot is connected to the Global Ninja Network! 🌐"
 
 def run():
-    # 🛠️ PORT FIX: This tells Render to use the port IT wants, or 8080 if local.
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
@@ -39,7 +37,7 @@ def keep_alive():
 
 # --- DISCORD BOT SETUP ---
 intents = discord.Intents.default()
-intents.members = True # CRITICAL: Allows bot to see when new ninja join
+intents.members = True
 intents.message_content = True
 
 class MyClient(discord.Client):
@@ -54,12 +52,14 @@ client = MyClient()
 
 # --- HELPER FUNCTIONS ---
 
-async def get_welcome_message(guild):
-    """Fetches the custom welcome message from the storage channel."""
+async def get_welcome_message(bot_client):
+    """
+    Fetches the custom welcome message from the storage channel.
+    Uses fetch_channel to find it globally (in the DB server).
+    """
     try:
-        channel = guild.get_channel(DATA_CHANNEL_ID)
-        if not channel:
-            return "Welcome to the server, {user}!"
+        # 🛠️ FIX: Use bot_client.fetch_channel to find it in the Storage Server
+        channel = await bot_client.fetch_channel(DATA_CHANNEL_ID)
         
         # Get the last message in history
         messages = [message async for message in channel.history(limit=1)]
@@ -67,23 +67,22 @@ async def get_welcome_message(guild):
             return messages[0].content
         return "Welcome to the server, {user}!"
     except Exception as e:
-        print(f"Error fetching message: {e}")
+        print(f"Error fetching welcome message: {e}")
         return "Welcome {user} to {server}!"
 
-async def get_random_template(guild):
-    """Fetches a random image URL from the template channel."""
+async def get_random_template(bot_client):
+    """
+    Fetches a random image URL from the template channel in the DB Server.
+    """
     try:
-        channel = guild.get_channel(TEMPLATE_CHANNEL_ID)
-        if not channel:
-            return None
+        # 🛠️ FIX: Use bot_client.fetch_channel to find it in the Storage Server
+        channel = await bot_client.fetch_channel(TEMPLATE_CHANNEL_ID)
         
-        # Check last 10 messages for images
         images = []
         async for message in channel.history(limit=10):
             if message.attachments:
                 images.append(message.attachments[0].url)
         
-        # Pick from first 3 found
         if not images:
             return None
         
@@ -94,14 +93,9 @@ async def get_random_template(guild):
         return None
 
 def create_naruto_text(base_image, text):
-    """
-    Draws text with:
-    1. White Outline (Stroke)
-    2. Split Gradient (Top Blue, Bottom Yellow)
-    """
+    """Draws the text with Naruto styling (Stroke + Split Gradient)."""
     draw = ImageDraw.Draw(base_image)
     
-    # Load Font
     try:
         font = ImageFont.truetype(FONT_PATH, FONT_SIZE)
     except IOError:
@@ -109,55 +103,43 @@ def create_naruto_text(base_image, text):
         font = ImageFont.load_default()
 
     # 1. Calculate Text Size
-    # bbox returns (left, top, right, bottom)
     bbox = draw.textbbox((0, 0), text, font=font)
     text_width = bbox[2] - bbox[0]
     text_height = bbox[3] - bbox[1]
     
-    # Adjust font size if text is too wide for the box (max ~900px)
+    # Resize logic
     current_font_size = FONT_SIZE
     while text_width > 900 and current_font_size > 50:
         current_font_size -= 5
         try:
             font = ImageFont.truetype(FONT_PATH, current_font_size)
         except:
-            pass # Keep previous font if resize fails
+            pass
         bbox = draw.textbbox((0, 0), text, font=font)
         text_width = bbox[2] - bbox[0]
         text_height = bbox[3] - bbox[1]
 
-    # Calculate Center Position
+    # Center Position
     x = TEXT_X - (text_width / 2)
     y = TEXT_Y - (text_height / 2)
 
-    # 2. Draw the Outline (Stroke)
-    # We draw it in white multiple times to create thickness
+    # 2. Outline (Stroke)
     stroke_width = 8
     draw.text((x, y), text, font=font, fill="white", stroke_width=stroke_width)
 
-    # 3. Create the Gradient Text Layer
-    # Create a separate image (mask) for the text shape
-    # We make it the same size as the base image to keep coordinates simple
+    # 3. Gradient Text Layer
     mask_img = Image.new('L', base_image.size, 0)
     mask_draw = ImageDraw.Draw(mask_img)
     mask_draw.text((x, y), text, font=font, fill=255)
 
-    # Create the color layer (Blue top, Yellow bottom)
     color_img = Image.new('RGB', base_image.size, "black")
     color_draw = ImageDraw.Draw(color_img)
     
-    # Calculate split point (middle of the text height)
     split_y = TEXT_Y 
-    
-    # Fill Top Blue (#00A2E8) - Naruto Headband Blue
-    color_draw.rectangle([(0, 0), (base_image.width, split_y)], fill="#00A2E8")
-    
-    # Fill Bottom Yellow (#FFD700) - Naruto Hair Yellow
-    color_draw.rectangle([(0, split_y), (base_image.width, base_image.height)], fill="#FFD700")
+    color_draw.rectangle([(0, 0), (base_image.width, split_y)], fill="#00A2E8") # Blue
+    color_draw.rectangle([(0, split_y), (base_image.width, base_image.height)], fill="#FFD700") # Yellow
 
-    # 4. Composite: Paste the Color Layer onto the Base using the Text Mask
     base_image.paste(color_img, (0,0), mask_img)
-    
     return base_image
 
 # --- BOT EVENTS ---
@@ -165,7 +147,7 @@ def create_naruto_text(base_image, text):
 @client.event
 async def on_ready():
     print(f'Logged in as {client.user} (ID: {client.user.id})')
-    print('------')
+    print('Dattebayo! Ready to serve across servers! 🦊')
 
 # Slash Command: /setwelcome
 @client.tree.command(name="setwelcome", description="Set the custom welcome message")
@@ -175,37 +157,49 @@ async def set_welcome(interaction: discord.Interaction, message: str):
         await interaction.response.send_message("🚫 You need Administrator permissions!", ephemeral=True)
         return
 
+    # Defer the response because fetching across servers might take 1-2 seconds
+    await interaction.response.defer(ephemeral=True)
+
     try:
-        channel = interaction.guild.get_channel(DATA_CHANNEL_ID)
-        if channel:
-            await channel.send(message)
-            await interaction.response.send_message(f"✅ Welcome message updated!\n**Preview:** {message}", ephemeral=True)
-        else:
-            await interaction.response.send_message("❌ Data Channel not found.", ephemeral=True)
+        # 🛠️ FIX: Search GLOBALLY for the Data Channel using interaction.client
+        channel = await interaction.client.fetch_channel(DATA_CHANNEL_ID)
+        
+        await channel.send(message)
+        await interaction.followup.send(f"✅ Welcome message saved to Database Channel!\n**Preview:** {message}")
+            
+    except discord.NotFound:
+        await interaction.followup.send(f"❌ Could not find channel {DATA_CHANNEL_ID}. Is the bot in the Storage Server?")
+    except discord.Forbidden:
+        await interaction.followup.send("❌ I see the channel, but I don't have permission to write there!")
     except Exception as e:
         print(e)
-        await interaction.response.send_message("❌ Failed to save message.", ephemeral=True)
+        await interaction.followup.send(f"❌ Something went wrong: {e}")
 
 # Event: Member Join
 @client.event
 async def on_member_join(member):
-    print(f"User {member.name} joined! Preparing welcome...")
+    print(f"User {member.name} joined {member.guild.name}! Preparing welcome...")
     try:
+        # Check if this is the Main Server (where we want to welcome people)
+        if member.guild.id != 1452952401064759348 and str(member.guild.id) != "1452952401064759348":
+             # Optional: If you only want it to welcome in ONE specific server, keep this check.
+             # If you want it to welcome in ANY server using the ID config, remove this block.
+             pass
+
         welcome_channel = member.guild.get_channel(WELCOME_CHANNEL_ID)
         if not welcome_channel:
-            print("Welcome channel not found!")
+            print("Welcome channel not found in this guild.")
             return
 
-        # 1. Get Text
-        welcome_text = await get_welcome_message(member.guild)
-        welcome_text = welcome_text.replace("{user}", member.mention).replace("{server}", member.guild.name)
+        # 1. Get Text (passing member.client to find the DB channel)
+        raw_text = await get_welcome_message(member.client)
+        welcome_text = raw_text.replace("{user}", member.mention).replace("{server}", member.guild.name)
 
-        # 2. Get Background
-        bg_url = await get_random_template(member.guild)
+        # 2. Get Background (passing member.client)
+        bg_url = await get_random_template(member.client)
         
         if bg_url:
             print(f"Downloading template: {bg_url}")
-            # Download the image
             response = requests.get(bg_url)
             image_bytes = io.BytesIO(response.content)
             
@@ -213,17 +207,14 @@ async def on_member_join(member):
                 # 3. Apply Naruto Text Logic
                 final_img = create_naruto_text(img, member.name)
                 
-                # Save to buffer
                 with io.BytesIO() as image_binary:
                     final_img.save(image_binary, 'PNG')
                     image_binary.seek(0)
                     
-                    # 4. Send
                     file = discord.File(fp=image_binary, filename='welcome.png')
                     await welcome_channel.send(content=welcome_text, file=file)
-                    print("Welcome image sent!")
+                    print("Welcome sent!")
         else:
-            # Fallback if no image found in your Template Channel
             print("No template found, sending text only.")
             await welcome_channel.send(content=welcome_text)
 
@@ -231,5 +222,5 @@ async def on_member_join(member):
         print(f"Error in welcome event: {e}")
 
 # --- RUN ---
-keep_alive() # Start web server for Render
+keep_alive()
 client.run(os.environ['DISCORD_TOKEN'])
