@@ -9,15 +9,11 @@ import io
 import requests
 
 # --- CONFIGURATION ---
-# 1. DB Server (Where data lives)
-DATA_CHANNEL_ID = 1464978865351950432
-TEMPLATE_CHANNEL_ID = 1464979503645200652
+DATA_CHANNEL_ID = 1464978865351950432      # DB Server: Data
+TEMPLATE_CHANNEL_ID = 1464979503645200652  # DB Server: Images
+WELCOME_SERVER_ID = 1452948411014713386    # Main Server: ID
+WELCOME_CHANNEL_ID = 1452952401064759348   # Main Server: Channel
 
-# 2. Main Server (Where people join)
-WELCOME_SERVER_ID = 1452948411014713386    # <--- NEW: The ID of the server to watch
-WELCOME_CHANNEL_ID = 1452952401064759348   # <--- The channel to send the image to
-
-# --- TEXT CONFIG ---
 TEXT_X = 1395
 TEXT_Y = 806
 FONT_SIZE = 120
@@ -28,7 +24,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Dattebayo! Guarding Server 1452948411014713386! 🛡️"
+    return "Dattebayo! Bot is Online! 🍃"
 
 def run():
     port = int(os.environ.get("PORT", 8080))
@@ -38,9 +34,10 @@ def keep_alive():
     t = Thread(target=run)
     t.start()
 
-# --- DISCORD BOT SETUP ---
+# --- DISCORD SETUP ---
+# ⚠️ CRITICAL: Only works if enabled in Developer Portal
 intents = discord.Intents.default()
-intents.members = True # ⚠️ CRITICAL: Must be enabled in Dev Portal!
+intents.members = True 
 intents.message_content = True
 
 class MyClient(discord.Client):
@@ -57,19 +54,17 @@ client = MyClient()
 
 async def get_welcome_message(bot_client):
     try:
-        # Search globally for the DB channel
         channel = await bot_client.fetch_channel(DATA_CHANNEL_ID)
         messages = [message async for message in channel.history(limit=1)]
         if messages:
             return messages[0].content
         return "Welcome to the server, {user}!"
     except Exception as e:
-        print(f"Error fetching welcome message: {e}")
+        print(f"Error fetching DB Message: {e}")
         return "Welcome {user} to {server}!"
 
 async def get_random_template(bot_client):
     try:
-        # Search globally for the DB channel
         channel = await bot_client.fetch_channel(TEMPLATE_CHANNEL_ID)
         images = []
         async for message in channel.history(limit=10):
@@ -81,7 +76,7 @@ async def get_random_template(bot_client):
         candidates = images[:3]
         return random.choice(candidates)
     except Exception as e:
-        print(f"Error fetching template: {e}")
+        print(f"Error fetching DB Template: {e}")
         return None
 
 def create_naruto_text(base_image, text):
@@ -89,9 +84,9 @@ def create_naruto_text(base_image, text):
     try:
         font = ImageFont.truetype(FONT_PATH, FONT_SIZE)
     except IOError:
+        print("Font file not found, using default.")
         font = ImageFont.load_default()
 
-    # Text Size & Position
     bbox = draw.textbbox((0, 0), text, font=font)
     text_width = bbox[2] - bbox[0]
     text_height = bbox[3] - bbox[1]
@@ -109,10 +104,8 @@ def create_naruto_text(base_image, text):
     x = TEXT_X - (text_width / 2)
     y = TEXT_Y - (text_height / 2)
 
-    # Stroke
     draw.text((x, y), text, font=font, fill="white", stroke_width=8)
 
-    # Gradient Mask
     mask_img = Image.new('L', base_image.size, 0)
     mask_draw = ImageDraw.Draw(mask_img)
     mask_draw.text((x, y), text, font=font, fill=255)
@@ -126,20 +119,18 @@ def create_naruto_text(base_image, text):
     base_image.paste(color_img, (0,0), mask_img)
     return base_image
 
-# --- BOT EVENTS ---
+# --- COMMANDS & EVENTS ---
 
 @client.event
 async def on_ready():
     print(f'Logged in as {client.user} (ID: {client.user.id})')
-    print('Dattebayo! Ready to welcome new ninja! 🦊')
+    print(f'Watching Server ID: {WELCOME_SERVER_ID}')
 
-@client.tree.command(name="setwelcome", description="Set the custom welcome message")
-@app_commands.describe(message="Use {user} for mention and {server} for server name")
+@client.tree.command(name="setwelcome", description="Set custom welcome message")
 async def set_welcome(interaction: discord.Interaction, message: str):
     if not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message("🚫 Admin only!", ephemeral=True)
         return
-
     await interaction.response.defer(ephemeral=True)
     try:
         channel = await interaction.client.fetch_channel(DATA_CHANNEL_ID)
@@ -148,26 +139,64 @@ async def set_welcome(interaction: discord.Interaction, message: str):
     except Exception as e:
         await interaction.followup.send(f"❌ Error: {e}")
 
+# 🧪 NEW DEBUG COMMAND
+@client.tree.command(name="testwelcome", description="Force a welcome message to test if the bot works")
+async def test_welcome(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("🚫 Admin only!", ephemeral=True)
+        return
+    
+    await interaction.response.defer()
+    
+    try:
+        # Simulate the logic
+        member = interaction.user
+        welcome_channel = interaction.guild.get_channel(WELCOME_CHANNEL_ID)
+        
+        if not welcome_channel:
+            await interaction.followup.send(f"❌ I cannot find the Welcome Channel (ID: {WELCOME_CHANNEL_ID}). Check permissions!")
+            return
+
+        raw_text = await get_welcome_message(interaction.client)
+        welcome_text = raw_text.replace("{user}", member.mention).replace("{server}", member.guild.name)
+
+        bg_url = await get_random_template(interaction.client)
+        
+        if bg_url:
+            response = requests.get(bg_url)
+            image_bytes = io.BytesIO(response.content)
+            
+            with Image.open(image_bytes).convert("RGBA") as img:
+                final_img = create_naruto_text(img, member.name)
+                
+                with io.BytesIO() as image_binary:
+                    final_img.save(image_binary, 'PNG')
+                    image_binary.seek(0)
+                    file = discord.File(fp=image_binary, filename='welcome.png')
+                    await welcome_channel.send(content=welcome_text, file=file)
+                    await interaction.followup.send("✅ Test Sent! Check the welcome channel.")
+        else:
+            await interaction.followup.send("❌ No template image found in DB channel.")
+            
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error during test: {e}")
+
 @client.event
 async def on_member_join(member):
-    # 🕵️ Check if the join happened in the correct server
+    # Debug print to Render Logs
+    print(f"EVENT TRIGGERED: {member.name} joined {member.guild.id}")
+    
     if member.guild.id != WELCOME_SERVER_ID:
-        print(f"Ignored join in server: {member.guild.id} (Not our target village)")
         return
-
-    print(f"New Shinobi detected: {member.name} in {member.guild.name}")
 
     try:
         welcome_channel = member.guild.get_channel(WELCOME_CHANNEL_ID)
         if not welcome_channel:
-            print("❌ Welcome channel not found inside this server!")
+            print("Welcome channel missing.")
             return
 
-        # 1. Get Data from DB
         raw_text = await get_welcome_message(member.client)
         welcome_text = raw_text.replace("{user}", member.mention).replace("{server}", member.guild.name)
-
-        # 2. Get Image
         bg_url = await get_random_template(member.client)
         
         if bg_url:
@@ -182,12 +211,8 @@ async def on_member_join(member):
                     image_binary.seek(0)
                     file = discord.File(fp=image_binary, filename='welcome.png')
                     await welcome_channel.send(content=welcome_text, file=file)
-                    print("✅ Welcome Scroll Sent!")
-        else:
-            await welcome_channel.send(content=welcome_text)
-
     except Exception as e:
-        print(f"❌ Error in welcome event: {e}")
+        print(f"Error in on_member_join: {e}")
 
 keep_alive()
 client.run(os.environ['DISCORD_TOKEN'])
