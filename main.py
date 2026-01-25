@@ -1,35 +1,37 @@
 import discord
 from discord import app_commands
-from discord.ext import commands
 import os
 import random
-import asyncio
 from flask import Flask
 from threading import Thread
-from PIL import Image, ImageDraw, ImageFont, ImageColor
+from PIL import Image, ImageDraw, ImageFont
 import io
 import requests
 
 # --- CONFIGURATION ---
+# These are the channel IDs you provided
 DATA_CHANNEL_ID = 1464978865351950432      # Saves the welcome text
 TEMPLATE_CHANNEL_ID = 1464979503645200652  # Saves the images
 WELCOME_CHANNEL_ID = 1452952401064759348   # Where the bot says hello
 
-# --- TEXT CONFIG (Your Coordinates) ---
+# --- TEXT CONFIG (Coordinates & Font) ---
+# Calculated based on your image data
 TEXT_X = 1395
 TEXT_Y = 806
 FONT_SIZE = 120
-FONT_PATH = "njnaruto.ttf" # Make sure this file is in the root folder!
+FONT_PATH = "njnaruto.ttf" # ⚠️ Make sure this file is uploaded to Render!
 
 # --- FLASK SERVER (For Render Keep-Alive) ---
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Dattebayo! Python Bot is guarding the village! 🍥"
+    return "Dattebayo! The Bot is guarding the village! 🍃"
 
 def run():
-    app.run(host='0.0.0.0', port=8080)
+    # 🛠️ PORT FIX: This tells Render to use the port IT wants, or 8080 if local.
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
     t = Thread(target=run)
@@ -37,7 +39,7 @@ def keep_alive():
 
 # --- DISCORD BOT SETUP ---
 intents = discord.Intents.default()
-intents.members = True # CRITICAL: Allows bot to see new members
+intents.members = True # CRITICAL: Allows bot to see when new ninja join
 intents.message_content = True
 
 class MyClient(discord.Client):
@@ -103,10 +105,10 @@ def create_naruto_text(base_image, text):
     try:
         font = ImageFont.truetype(FONT_PATH, FONT_SIZE)
     except IOError:
-        print("⚠️ Could not find njnaruto.ttf! Using default font.")
+        print(f"⚠️ Could not find {FONT_PATH}! Using default font.")
         font = ImageFont.load_default()
 
-    # 1. Calculate Text Size and Position
+    # 1. Calculate Text Size
     # bbox returns (left, top, right, bottom)
     bbox = draw.textbbox((0, 0), text, font=font)
     text_width = bbox[2] - bbox[0]
@@ -116,22 +118,26 @@ def create_naruto_text(base_image, text):
     current_font_size = FONT_SIZE
     while text_width > 900 and current_font_size > 50:
         current_font_size -= 5
-        font = ImageFont.truetype(FONT_PATH, current_font_size)
+        try:
+            font = ImageFont.truetype(FONT_PATH, current_font_size)
+        except:
+            pass # Keep previous font if resize fails
         bbox = draw.textbbox((0, 0), text, font=font)
         text_width = bbox[2] - bbox[0]
         text_height = bbox[3] - bbox[1]
 
-    # Center position
+    # Calculate Center Position
     x = TEXT_X - (text_width / 2)
     y = TEXT_Y - (text_height / 2)
 
-    # 2. Draw the Outline (Stroke) directly on the base image
+    # 2. Draw the Outline (Stroke)
     # We draw it in white multiple times to create thickness
     stroke_width = 8
-    draw.text((x, y), text, font=font, fill="white", stroke_width=stroke_width, stroke_fill="white")
+    draw.text((x, y), text, font=font, fill="white", stroke_width=stroke_width)
 
     # 3. Create the Gradient Text Layer
-    # Create a separate image for the text mask
+    # Create a separate image (mask) for the text shape
+    # We make it the same size as the base image to keep coordinates simple
     mask_img = Image.new('L', base_image.size, 0)
     mask_draw = ImageDraw.Draw(mask_img)
     mask_draw.text((x, y), text, font=font, fill=255)
@@ -140,13 +146,13 @@ def create_naruto_text(base_image, text):
     color_img = Image.new('RGB', base_image.size, "black")
     color_draw = ImageDraw.Draw(color_img)
     
-    # Calculate split point (middle of the text)
+    # Calculate split point (middle of the text height)
     split_y = TEXT_Y 
     
-    # Fill Top Blue (#00A2E8)
+    # Fill Top Blue (#00A2E8) - Naruto Headband Blue
     color_draw.rectangle([(0, 0), (base_image.width, split_y)], fill="#00A2E8")
     
-    # Fill Bottom Yellow (#FFD700)
+    # Fill Bottom Yellow (#FFD700) - Naruto Hair Yellow
     color_draw.rectangle([(0, split_y), (base_image.width, base_image.height)], fill="#FFD700")
 
     # 4. Composite: Paste the Color Layer onto the Base using the Text Mask
@@ -183,9 +189,11 @@ async def set_welcome(interaction: discord.Interaction, message: str):
 # Event: Member Join
 @client.event
 async def on_member_join(member):
+    print(f"User {member.name} joined! Preparing welcome...")
     try:
         welcome_channel = member.guild.get_channel(WELCOME_CHANNEL_ID)
         if not welcome_channel:
+            print("Welcome channel not found!")
             return
 
         # 1. Get Text
@@ -196,6 +204,7 @@ async def on_member_join(member):
         bg_url = await get_random_template(member.guild)
         
         if bg_url:
+            print(f"Downloading template: {bg_url}")
             # Download the image
             response = requests.get(bg_url)
             image_bytes = io.BytesIO(response.content)
@@ -212,13 +221,15 @@ async def on_member_join(member):
                     # 4. Send
                     file = discord.File(fp=image_binary, filename='welcome.png')
                     await welcome_channel.send(content=welcome_text, file=file)
+                    print("Welcome image sent!")
         else:
-            # Fallback if no image found
+            # Fallback if no image found in your Template Channel
+            print("No template found, sending text only.")
             await welcome_channel.send(content=welcome_text)
 
     except Exception as e:
-        print(f"Error in welcome: {e}")
+        print(f"Error in welcome event: {e}")
 
 # --- RUN ---
-keep_alive() # Start web server
+keep_alive() # Start web server for Render
 client.run(os.environ['DISCORD_TOKEN'])
