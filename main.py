@@ -26,7 +26,7 @@ FONT_PATH = "njnaruto.ttf"
 # --- FLASK SERVER ---
 app = Flask('')
 @app.route('/')
-def home(): return "Dattebayo! Role Picker System Online! 🛡️"
+def home(): return "Dattebayo! System Stable! 🍃"
 def run():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
@@ -115,119 +115,157 @@ def create_naruto_text(base_image, text):
     return base_image
 
 # ==========================================
-# 🛡️ VERIFICATION LOGIC
+# 🛡️ STABLE VERIFICATION LOGIC
 # ==========================================
 
 class StartVerificationView(View):
     def __init__(self): super().__init__(timeout=None)
     @discord.ui.button(label="Verify Identity", style=discord.ButtonStyle.success, emoji="🛡️", custom_id="start_verify_btn")
     async def verify_button(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.defer(ephemeral=True) # Ack immediately to prevent timeout
         config = await load_config(interaction.client)
         if not config or not config.get("questions"):
-            return await interaction.response.send_message("❌ Verification not configured.", ephemeral=True)
-        await run_question_step(interaction, config, 0, [])
+            return await interaction.followup.send("❌ Verification not configured.", ephemeral=True)
+        
+        # Start Step 0
+        await run_question_step(interaction, config, 0, [], is_followup=True)
 
-async def run_question_step(interaction, config, index, answers):
+async def run_question_step(interaction, config, index, answers, is_followup=False):
     questions = config["questions"]
+    
+    # 1. FINISH CHECK
     if index >= len(questions):
         await finish_verification(interaction, config, answers)
         return
 
     q = questions[index]
+    
+    # 2. DETERMINE NEXT STEP TYPE
+    # TEXT -> Needs a Modal. We MUST send a button first if we are coming from a Followup or Edit.
     if q["type"] == "text":
-        modal = QuestionModal(config, index, answers, q["prompt"])
-        try: await interaction.response.send_modal(modal)
-        except: await interaction.response.send_message("📝 **Next:**", view=ContinueView(config, index, answers, q["prompt"]), ephemeral=True)
+        view = ModalTriggerView(config, index, answers, q["prompt"])
+        msg_content = f"📝 **Question {index+1}:** Click to answer."
+        
+        if is_followup:
+            await interaction.followup.send(msg_content, view=view, ephemeral=True)
+        else:
+            # We try to edit, but if it was a text input before, we might need a new message
+            try: await interaction.response.edit_message(content=msg_content, view=view)
+            except: await interaction.response.send_message(msg_content, view=view, ephemeral=True)
+
+    # DROPDOWN -> View
     elif q["type"] == "select":
         view = QuestionSelectView(config, index, answers, q["prompt"], q["options"])
-        try: await interaction.response.send_message(f"🔻 **Q{index+1}:** {q['prompt']}", view=view, ephemeral=True)
-        except: await interaction.followup.send(f"🔻 **Q{index+1}:** {q['prompt']}", view=view, ephemeral=True)
+        content = f"🔻 **Question {index+1}:** {q['prompt']}"
+        
+        if is_followup:
+            await interaction.followup.send(content, view=view, ephemeral=True)
+        else:
+            try: await interaction.response.edit_message(content=content, view=view)
+            except: await interaction.response.send_message(content, view=view, ephemeral=True)
+
+    # BUTTONS -> View
     elif q["type"] == "radio":
         view = QuestionRadioView(config, index, answers, q["prompt"], q["options"])
-        try: await interaction.response.send_message(f"🔘 **Q{index+1}:** {q['prompt']}", view=view, ephemeral=True)
-        except: await interaction.followup.send(f"🔘 **Q{index+1}:** {q['prompt']}", view=view, ephemeral=True)
+        content = f"🔘 **Question {index+1}:** {q['prompt']}"
+        
+        if is_followup:
+            await interaction.followup.send(content, view=view, ephemeral=True)
+        else:
+            try: await interaction.response.edit_message(content=content, view=view)
+            except: await interaction.response.send_message(content, view=view, ephemeral=True)
 
-# UI Components
+# --- UI COMPONENTS ---
+
+# Used to launch a Modal safely
+class ModalTriggerView(View):
+    def __init__(self, c, i, a, p):
+        super().__init__(timeout=300)
+        self.c, self.i, self.a, self.p = c, i, a, p
+    
+    @discord.ui.button(label="Answer Question", style=discord.ButtonStyle.primary, emoji="✍️")
+    async def open_modal(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.send_modal(QuestionModal(self.c, self.i, self.a, self.p))
+
 class QuestionModal(Modal):
     def __init__(self, config, index, answers, prompt):
         super().__init__(title=f"Question {index+1}")
         self.c, self.i, self.a = config, index, answers
         self.inp = TextInput(label=prompt[:45], required=True)
         self.add_item(self.inp)
-    async def on_submit(self, interaction):
+    async def on_submit(self, interaction: discord.Interaction):
+        # Save answer
         self.a.append({"q": self.inp.label, "a": self.inp.value})
-        await run_question_step(interaction, self.c, self.i + 1, self.a)
-
-class ContinueView(View):
-    def __init__(self, c, i, a, p):
-        super().__init__(timeout=180)
-        self.c, self.i, self.a, self.p = c, i, a, p
-    @discord.ui.button(label="Answer", style=discord.ButtonStyle.primary)
-    async def go(self, interaction, button):
-        await interaction.response.send_modal(QuestionModal(self.c, self.i, self.a, self.p))
+        # Go to next, treat as followup because Modal consumes the token
+        await interaction.response.defer(ephemeral=True) 
+        await run_question_step(interaction, self.c, self.i + 1, self.a, is_followup=True)
 
 class QuestionSelectView(View):
     def __init__(self, c, i, a, p, o):
-        super().__init__(timeout=180)
+        super().__init__(timeout=300)
         self.c, self.i, self.a = c, i, a
-        self.add_item(Select(options=[discord.SelectOption(label=x) for x in o[:25]]))
+        self.add_item(Select(options=[discord.SelectOption(label=x[:100]) for x in o[:25]]))
         self.children[0].callback = self.cb
-    async def cb(self, interaction):
+    async def cb(self, interaction: discord.Interaction):
         self.a.append({"q": "Choice", "a": interaction.data['values'][0]})
-        await interaction.response.edit_message(view=None)
-        await run_question_step(interaction, self.c, self.i+1, self.a)
+        # We must defer update to allow transition
+        await interaction.response.defer(ephemeral=True)
+        # Disable old view
+        await interaction.edit_original_response(content="✅ **Saved.** Loading next...", view=None)
+        await run_question_step(interaction, self.c, self.i+1, self.a, is_followup=True)
 
 class QuestionRadioView(View):
     def __init__(self, c, i, a, p, o):
-        super().__init__(timeout=180)
+        super().__init__(timeout=300)
         self.c, self.i, self.a = c, i, a
         for opt in o[:5]:
-            btn = Button(label=opt, style=discord.ButtonStyle.secondary)
+            btn = Button(label=opt[:80], style=discord.ButtonStyle.secondary)
             btn.callback = self.make_cb(opt)
             self.add_item(btn)
     def make_cb(self, val):
-        async def cb(interaction):
+        async def cb(interaction: discord.Interaction):
             self.a.append({"q": "Selection", "a": val})
-            await interaction.response.edit_message(view=None)
-            await run_question_step(interaction, self.c, self.i+1, self.a)
+            await interaction.response.defer(ephemeral=True)
+            await interaction.edit_original_response(content="✅ **Saved.** Loading next...", view=None)
+            await run_question_step(interaction, self.c, self.i+1, self.a, is_followup=True)
         return cb
 
 async def finish_verification(interaction, config, answers):
-    # 🔄 REMOVE UNVERIFIED ROLE 🔄
     unverified_id = config.get("unverified_role_id")
     guild = interaction.guild
     member = interaction.user
     msg_log = []
 
+    # Role Removal Logic
     if unverified_id:
         unverified_role = guild.get_role(unverified_id)
         if unverified_role:
             try:
                 await member.remove_roles(unverified_role)
-                msg_log.append("🔓 Un-verified role removed.")
+                msg_log.append("🔓 Access Granted (Unverified role removed).")
             except Exception as e:
-                msg_log.append(f"⚠️ Failed to remove role: {e}")
+                msg_log.append(f"⚠️ Permission Error: Could not remove role. Check Bot Roles hierarchy!")
         else:
-            msg_log.append("⚠️ Configured role not found.")
+            msg_log.append("⚠️ Config Error: Unverified role ID not found in this server.")
     else:
-        msg_log.append("⚠️ No role configured to remove.")
+        msg_log.append("ℹ️ No role removal configured.")
 
     final_msg = "\n".join(msg_log)
-    await interaction.followup.send(f"🎉 **Verification Complete!**\n{final_msg}", ephemeral=True)
+    await interaction.followup.send(f"🎉 **You are now Verified!**\n{final_msg}", ephemeral=True)
 
-    # Log to Channel
+    # Logs
     try:
         log_channel = interaction.client.get_channel(LOG_CHANNEL_ID)
         if log_channel:
             embed = discord.Embed(title=f"🛡️ Verified: {interaction.user.name}", color=0x00ff00)
             embed.set_thumbnail(url=interaction.user.display_avatar.url)
             for item in answers:
-                embed.add_field(name=item['q'], value=item['a'], inline=False)
+                embed.add_field(name=item['q'], value=str(item['a']), inline=False)
             await log_channel.send(embed=embed)
     except: pass
 
 # ==========================================
-# 🛠️ SETUP WIZARD
+# 🛠️ SETUP WIZARD (Admin)
 # ==========================================
 class SetupWizardView(View):
     def __init__(self, config):
@@ -237,10 +275,8 @@ class SetupWizardView(View):
 
     @discord.ui.button(label="+ Text Q", style=discord.ButtonStyle.primary, row=0)
     async def add_text(self, interaction, button): await interaction.response.send_modal(SetupTextModal(self))
-    
     @discord.ui.button(label="+ Dropdown", style=discord.ButtonStyle.secondary, row=0)
     async def add_select(self, interaction, button): await interaction.response.send_modal(SetupOptionsModal(self, "select"))
-    
     @discord.ui.button(label="+ Buttons", style=discord.ButtonStyle.secondary, row=0)
     async def add_radio(self, interaction, button): await interaction.response.send_modal(SetupOptionsModal(self, "radio"))
     
@@ -251,7 +287,7 @@ class SetupWizardView(View):
         await interaction.response.edit_message(content=f"✅ **Saved!** {len(self.q)} questions.", view=None)
 
     async def update(self, interaction):
-        t = "**Questions:**\n" + "\n".join([f"{i+1}. {q['prompt']}" for i,q in enumerate(self.q)])
+        t = "**Current Questions:**\n" + "\n".join([f"{i+1}. [{q['type'].upper()}] {q['prompt']}" for i,q in enumerate(self.q)])
         await interaction.response.edit_message(content=t, view=self)
 
 class SetupTextModal(Modal):
@@ -263,60 +299,51 @@ class SetupOptionsModal(Modal):
     async def on_submit(self, interaction): self.p.q.append({"type":self.t,"prompt":self.prompt.value,"options":[x.strip() for x in self.opts.value.split(',')]}); await self.p.update(interaction)
 
 # ==========================================
-# 🚀 MAIN COMMANDS
+# 🚀 COMMANDS & EVENTS
 # ==========================================
 
-@client.tree.command(name="setup_verification", description="Setup the Unverified role and questions")
-@app_commands.describe(unverified_role="Select the role to remove after verification")
+@client.tree.command(name="setup_verification", description="Setup verification questions")
+@app_commands.describe(unverified_role="Select the Unverified Role")
 async def setup_verification(interaction: discord.Interaction, unverified_role: discord.Role):
-    """
-    Admin command to setup the system.
-    Using 'discord.Role' type allows the user to SELECT the role from a list.
-    No typing mistakes possible! 🛡️
-    """
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("🚫 Admin only!", ephemeral=True)
-    
-    # Save the Role ID safely
-    config = {
-        "unverified_role_id": unverified_role.id,
-        "questions": []
-    }
-    await interaction.response.send_message(f"🛠️ **Setup Wizard:**\nSelected Role: {unverified_role.mention}\nAdd your questions below:", view=SetupWizardView(config), ephemeral=True)
+    config = {"unverified_role_id": unverified_role.id, "questions": []}
+    await interaction.response.send_message(f"🛠️ **Setup Wizard**\nRole to remove: {unverified_role.mention}", view=SetupWizardView(config), ephemeral=True)
 
-@client.tree.command(name="verify", description="Start verification")
+@client.tree.command(name="verify", description="Start verification manually")
 async def verify_command(interaction: discord.Interaction):
-    await interaction.response.send_message("🛡️ **Verify:**", view=StartVerificationView(), ephemeral=True)
+    await interaction.response.send_message("🛡️ **Verify Identity:**", view=StartVerificationView(), ephemeral=True)
 
 @client.event
 async def on_message(message):
     if message.author.bot: return
 
-    # SYSTEM MESSAGE WATCHER (Join Event)
+    # SYSTEM MESSAGE WATCHER
     if message.channel.id == WELCOME_CHANNEL_ID:
         is_join = message.type == discord.MessageType.new_member
         is_sim = (message.content == "!simulatejoin" and message.author.guild_permissions.administrator)
 
         if is_join or is_sim:
+            print(f"👀 Event Detected! Sim: {is_sim}")
             target = message.author
             
-            # 1. ASSIGN UNVERIFIED ROLE IMMEDIATELY
+            # 1. Try to Assign Role (Fail safe)
             try:
                 config = await load_config(message.client)
                 if config and config.get("unverified_role_id"):
                     role = message.guild.get_role(config["unverified_role_id"])
                     if role:
                         await target.add_roles(role)
-                        print(f"🔒 Unverified role assigned to {target.name}")
-            except Exception as e:
-                print(f"❌ Failed to assign unverified role: {e}")
+                        print("🔒 Unverified Role Added")
+            except Exception as e: print(f"⚠️ Role Error: {e}")
 
-            # 2. GENERATE IMAGE
-            raw_text = "Welcome {user} to {server}! Please verify to gain access."
+            # 2. Image & Button
+            raw_text = "Welcome {user} to {server}! Verify to enter."
             welcome_text = raw_text.replace("{user}", target.mention).replace("{server}", message.guild.name)
             bg_url = await get_random_template(message.client)
-
+            
             view = StartVerificationView()
+
             if bg_url:
                 try:
                     res = requests.get(bg_url)
@@ -327,7 +354,9 @@ async def on_message(message):
                             binary.seek(0)
                             f = discord.File(fp=binary, filename='welcome.png')
                             await message.channel.send(content=welcome_text, file=f, view=view)
-                except: await message.channel.send(content=welcome_text, view=view)
+                except Exception as e:
+                    print(f"❌ Image Error: {e}")
+                    await message.channel.send(content=welcome_text, view=view)
             else:
                 await message.channel.send(content=welcome_text, view=view)
 
